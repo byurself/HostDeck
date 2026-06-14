@@ -28,10 +28,13 @@ struct SidebarView: View {
                         .onTapGesture {
                             appModel.selectServer(profile.id)
                         }
-                        .onTapGesture(count: 2) {
-                            appModel.selectServer(profile.id)
-                            Task { await appModel.connectSelectedServer() }
-                        }
+                        .highPriorityGesture(
+                            TapGesture(count: 2)
+                                .onEnded {
+                                    appModel.selectServer(profile.id)
+                                    Task { await appModel.connectSelectedServer() }
+                                }
+                        )
                         .contextMenu {
                             Button("Edit") {
                                 appModel.editingServer = profile
