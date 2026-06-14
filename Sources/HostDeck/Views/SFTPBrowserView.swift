@@ -974,19 +974,22 @@ private struct FilePaneRowView: View {
         }
         .font(fileBrowserFont())
         .frame(width: contentWidth, alignment: .leading)
-        .contentShape(Rectangle())
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
         .background {
             RoundedRectangle(cornerRadius: 6)
                 .fill(isSelected ? Color.accentColor.opacity(0.24) : Color.clear)
         }
+        .contentShape(Rectangle())
         .onTapGesture {
             onSelect()
         }
-        .onTapGesture(count: 2) {
-            onOpen()
-        }
+        .highPriorityGesture(
+            TapGesture(count: 2)
+                .onEnded {
+                    onOpen()
+                }
+        )
         .contextMenu {
             Button("Open") {
                 onOpen()
