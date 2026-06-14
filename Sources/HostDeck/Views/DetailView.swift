@@ -131,11 +131,11 @@ private struct WorkspaceEmptyStateView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var title: String {
+    @MainActor private var title: String {
         appModel.selectedServer == nil ? "Choose a Server" : "No Open Tab"
     }
 
-    private var subtitle: String {
+    @MainActor private var subtitle: String {
         if let server = appModel.selectedServer {
             return "Open a workspace for \(server.displayName)."
         }
@@ -143,7 +143,7 @@ private struct WorkspaceEmptyStateView: View {
         return "Select one from the sidebar or add a new server."
     }
 
-    private var iconName: String {
+    @MainActor private var iconName: String {
         appModel.selectedServer == nil ? "server.rack" : appModel.selectedWorkspace.systemImage
     }
 }
