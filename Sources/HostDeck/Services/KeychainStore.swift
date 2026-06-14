@@ -403,7 +403,6 @@ private enum KeychainTrace {
 
     static func log(_ message: String) {
         logger.notice("\(message, privacy: .public)")
-        HostDeckDiagnosticLog.write(category: "Keychain", message)
     }
 }
 
