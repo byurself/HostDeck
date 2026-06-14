@@ -1,0 +1,73 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+
+# Xcode
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcuserdata/
+*.xcuserstate
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+
+# Build and packaging outputs
+dist/
+*.app
+*.dmg
+*.pkg
+*.ipa
+*.xcarchive
+*.zip
+*.tar.gz
+
+# Signing, certificates, and private keys
+*.cer
+*.certSigningRequest
+*.developerprofile
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.pem
+*.key
+*.private
+*.pub
+
+# Logs and diagnostics
+*.log
+logs/
+*.crash
+*.ips
+*.trace
+*.xcresult
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.secrets
+secrets/
+
+# Editor and tool state
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Codex local runtime state
+.codex/cache/
+.codex/logs/
+.codex/tmp/
