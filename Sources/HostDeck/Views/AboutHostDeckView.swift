@@ -42,38 +42,46 @@ struct AboutHostDeckView: View {
             VStack(alignment: .leading, spacing: 12) {
                 SectionLabel("Resources")
                 LazyVGrid(columns: resourceColumns, alignment: .leading, spacing: 8) {
-                    Button {} label: {
+                    Button {
+                        open(AppInfo.releasesURL)
+                    } label: {
                         Label("Check for Updates", systemImage: "arrow.triangle.2.circlepath")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .disabled(true)
+                    .help("Open the latest HostDeck release on GitHub.")
 
                     Button(action: openLogsFolder) {
                         Label("Open Logs Folder", systemImage: "folder")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .help("Open HostDeck's local logs folder.")
 
-                    Button {} label: {
+                    Button {
+                        open(AppInfo.newIssueURL)
+                    } label: {
                         Label("Report an Issue", systemImage: "exclamationmark.bubble")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .disabled(true)
+                    .help("Open a new GitHub issue with an issue report template.")
 
-                    Button {} label: {
+                    Button {
+                        open(AppInfo.repositoryURL)
+                    } label: {
                         Label("GitHub", systemImage: "network")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .disabled(true)
+                    .help("Open the HostDeck GitHub repository.")
 
-                    Button {} label: {
+                    Button {
+                        open(AppInfo.documentationURL)
+                    } label: {
                         Label("Documentation", systemImage: "book")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .disabled(true)
+                    .help("Open the HostDeck README documentation.")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
-                .help("Reserved links will be enabled after the public repository is configured.")
             }
         }
         .padding(28)
@@ -113,6 +121,10 @@ struct AboutHostDeckView: View {
     private func openLogsFolder() {
         let url = AppInfo.logsDirectory
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(url)
+    }
+
+    private func open(_ url: URL) {
         NSWorkspace.shared.open(url)
     }
 }
@@ -164,6 +176,12 @@ private struct LicenseDetailsView: View {
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                NSWorkspace.shared.open(AppInfo.licenseURL)
+            } label: {
+                Label("Open Full License", systemImage: "doc.text")
+            }
         }
         .padding(24)
         .frame(width: 520)
