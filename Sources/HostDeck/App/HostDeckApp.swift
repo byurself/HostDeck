@@ -12,7 +12,7 @@ struct HostDeckApp: App {
         WindowGroup("HostDeck") {
             ContentView(appModel: appModel)
                 .frame(minWidth: 1040, minHeight: 680)
-                .preferredColorScheme(preferredColorScheme)
+                .hostDeckAppearance(appearanceMode)
         }
         .commands {
             CommandGroup(replacing: .appInfo) {
@@ -43,24 +43,30 @@ struct HostDeckApp: App {
 
         Settings {
             SettingsView(appModel: appModel)
-                .preferredColorScheme(preferredColorScheme)
+                .hostDeckAppearance(appearanceMode)
         }
 
         Window("About HostDeck", id: "about-hostdeck") {
             AboutHostDeckView()
-                .preferredColorScheme(preferredColorScheme)
+                .hostDeckAppearance(appearanceMode)
         }
         .windowResizability(.contentSize)
     }
 
-    private var preferredColorScheme: ColorScheme? {
-        AppearanceMode.value(for: appearanceModeRaw).colorScheme
+    private var appearanceMode: AppearanceMode {
+        AppearanceMode.value(for: appearanceModeRaw)
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        HostDeckAppearance.apply(
+            AppearanceMode.value(
+                for: UserDefaults.standard.string(forKey: HostDeckPreferenceKeys.appearanceMode)
+                    ?? HostDeckPreferenceDefaults.appearanceMode.rawValue
+            )
+        )
         NSApp.activate(ignoringOtherApps: true)
     }
 }
