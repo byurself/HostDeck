@@ -10,15 +10,15 @@ struct SFTPBrowserView: View {
     @State private var pendingConflict: TransferConflict?
     @State private var filePaneSplitRatio: CGFloat = 0.5
 
-    private var selectedLocalFile: LocalFile? {
+    @MainActor private var selectedLocalFile: LocalFile? {
         appModel.localFiles.first { $0.id == selectedLocalFileID }
     }
 
-    private var selectedRemoteFile: RemoteFile? {
+    @MainActor private var selectedRemoteFile: RemoteFile? {
         appModel.remoteFiles.first { $0.id == selectedRemoteFileID }
     }
 
-    private var localFilePane: some View {
+    @MainActor private var localFilePane: some View {
         FilePane(
             title: NSUserName(),
             pathText: $localPathText,
@@ -57,7 +57,7 @@ struct SFTPBrowserView: View {
         )
     }
 
-    private var remoteFilePane: some View {
+    @MainActor private var remoteFilePane: some View {
         FilePane(
             title: appModel.selectedServer?.host ?? "Remote",
             pathText: $remotePathText,
@@ -191,7 +191,7 @@ struct SFTPBrowserView: View {
         }
     }
 
-    private func beginUpload(_ file: LocalFile?) {
+    @MainActor private func beginUpload(_ file: LocalFile?) {
         guard let file else { return }
         let remoteNames = Set(appModel.remoteFiles.map(\.name))
 
@@ -209,7 +209,7 @@ struct SFTPBrowserView: View {
         appModel.queueUpload(file)
     }
 
-    private func beginDownload(_ file: RemoteFile?) {
+    @MainActor private func beginDownload(_ file: RemoteFile?) {
         guard let file, file.name != ".." else { return }
         let localNames = Set(appModel.localFiles.map(\.name))
 
@@ -227,7 +227,7 @@ struct SFTPBrowserView: View {
         appModel.queueDownload(file)
     }
 
-    private func commitTransfer(_ conflict: TransferConflict, renamedName: String?) {
+    @MainActor private func commitTransfer(_ conflict: TransferConflict, renamedName: String?) {
         switch conflict.direction {
         case .upload:
             appModel.queueUpload(conflict.localFile, remoteName: renamedName)
@@ -263,15 +263,15 @@ struct SFTPDetachedWindowView: View {
     @State private var pendingConflict: TransferConflict?
     @State private var filePaneSplitRatio: CGFloat = 0.5
 
-    private var selectedLocalFile: LocalFile? {
+    @MainActor private var selectedLocalFile: LocalFile? {
         session.localFiles.first { $0.id == selectedLocalFileID }
     }
 
-    private var selectedRemoteFile: RemoteFile? {
+    @MainActor private var selectedRemoteFile: RemoteFile? {
         session.remoteFiles.first { $0.id == selectedRemoteFileID }
     }
 
-    private var localFilePane: some View {
+    @MainActor private var localFilePane: some View {
         FilePane(
             title: NSUserName(),
             pathText: $localPathText,
@@ -310,7 +310,7 @@ struct SFTPDetachedWindowView: View {
         )
     }
 
-    private var remoteFilePane: some View {
+    @MainActor private var remoteFilePane: some View {
         FilePane(
             title: session.profile.host,
             pathText: $remotePathText,
@@ -443,7 +443,7 @@ struct SFTPDetachedWindowView: View {
         }
     }
 
-    private func beginUpload(_ file: LocalFile?) {
+    @MainActor private func beginUpload(_ file: LocalFile?) {
         guard let file else { return }
         let remoteNames = Set(session.remoteFiles.map(\.name))
 
@@ -461,7 +461,7 @@ struct SFTPDetachedWindowView: View {
         appModel.queueUpload(file, serverID: session.profile.id, remoteDirectory: session.remotePath)
     }
 
-    private func beginDownload(_ file: RemoteFile?) {
+    @MainActor private func beginDownload(_ file: RemoteFile?) {
         guard let file, file.name != ".." else { return }
         let localNames = Set(session.localFiles.map(\.name))
 
@@ -484,7 +484,7 @@ struct SFTPDetachedWindowView: View {
         )
     }
 
-    private func commitTransfer(_ conflict: TransferConflict, renamedName: String?) {
+    @MainActor private func commitTransfer(_ conflict: TransferConflict, renamedName: String?) {
         switch conflict.direction {
         case .upload:
             appModel.queueUpload(

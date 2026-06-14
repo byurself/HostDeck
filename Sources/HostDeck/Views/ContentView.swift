@@ -70,7 +70,7 @@ struct ContentView: View {
         }
     }
 
-    private var workspaceSelection: Binding<WorkspaceKind> {
+    @MainActor private var workspaceSelection: Binding<WorkspaceKind> {
         Binding(
             get: { appModel.selectedWorkspace },
             set: { workspace in

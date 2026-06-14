@@ -4,7 +4,7 @@ struct SidebarView: View {
     @Bindable var appModel: AppModel
     @State private var searchText = ""
 
-    private var profiles: [ServerProfile] {
+    @MainActor private var profiles: [ServerProfile] {
         if searchText.isEmpty {
             return appModel.profileStore.profiles
         }

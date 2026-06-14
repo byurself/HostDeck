@@ -47,7 +47,7 @@ struct DetailView: View {
         }
     }
 
-    private var currentFooterState: DetailFooterState {
+    @MainActor private var currentFooterState: DetailFooterState {
         guard let tab = appModel.selectedWorkspaceTab else {
             return DetailFooterState(message: appModel.statusMessage, connectionState: appModel.connectionState)
         }
