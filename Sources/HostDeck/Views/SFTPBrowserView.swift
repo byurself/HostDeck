@@ -8,7 +8,7 @@ struct SFTPBrowserView: View {
     @State private var localPathText = ""
     @State private var remotePathText = ""
     @State private var pendingConflict: TransferConflict?
-    @State private var filePaneSplitRatio: CGFloat = 0.5
+    @AppStorage(HostDeckPreferenceKeys.fileTransferSplitRatio) private var filePaneSplitRatio = HostDeckPreferenceDefaults.fileTransferSplitRatio
 
     @MainActor private var selectedLocalFile: LocalFile? {
         appModel.localFiles.first { $0.id == selectedLocalFileID }
@@ -261,7 +261,7 @@ struct SFTPDetachedWindowView: View {
     @State private var localPathText = ""
     @State private var remotePathText = ""
     @State private var pendingConflict: TransferConflict?
-    @State private var filePaneSplitRatio: CGFloat = 0.5
+    @AppStorage(HostDeckPreferenceKeys.fileTransferSplitRatio) private var filePaneSplitRatio = HostDeckPreferenceDefaults.fileTransferSplitRatio
 
     @MainActor private var selectedLocalFile: LocalFile? {
         session.localFiles.first { $0.id == selectedLocalFileID }
@@ -657,7 +657,7 @@ private struct TransferConflictSheet: View {
 }
 
 private struct FileTransferSplitView<Leading: View, Trailing: View>: View {
-    @Binding var splitRatio: CGFloat
+    @Binding var splitRatio: Double
     let leading: () -> Leading
     let trailing: () -> Trailing
     @State private var dragStartWidth: CGFloat?
@@ -666,7 +666,7 @@ private struct FileTransferSplitView<Leading: View, Trailing: View>: View {
     private let minimumPaneWidth: CGFloat = 320
 
     init(
-        splitRatio: Binding<CGFloat>,
+        splitRatio: Binding<Double>,
         @ViewBuilder leading: @escaping () -> Leading,
         @ViewBuilder trailing: @escaping () -> Trailing
     ) {
@@ -732,13 +732,13 @@ private struct FileTransferSplitView<Leading: View, Trailing: View>: View {
             proposedWidth: startingWidth + value.translation.width,
             availableWidth: availableWidth
         )
-        splitRatio = min(max(nextWidth / availableWidth, 0.2), 0.8)
+        splitRatio = Double(min(max(nextWidth / availableWidth, 0.2), 0.8))
     }
 
     private func constrainedLeadingWidth(totalWidth: CGFloat) -> CGFloat {
         let availableWidth = max(1, totalWidth - handleWidth)
         return constrainedLeadingWidth(
-            proposedWidth: availableWidth * min(max(splitRatio, 0.2), 0.8),
+            proposedWidth: availableWidth * CGFloat(min(max(splitRatio, 0.2), 0.8)),
             availableWidth: availableWidth
         )
     }
@@ -765,7 +765,51 @@ private struct FilePane: View {
     let onRefresh: () -> Void
     let onSelect: (FilePaneRow) -> Void
     let onOpen: (FilePaneRow) -> Void
-    @State private var columnWidths = FilePaneColumnWidths()
+    @AppStorage private var storedColumnWidths: Data
+
+    init(
+        title: String,
+        pathText: Binding<String>,
+        systemImage: String,
+        rows: [FilePaneRow],
+        selectedID: Binding<String?>,
+        showsPermissions: Bool,
+        columnWidthsStorageKey: String,
+        emptyTitle: String,
+        emptyDescription: String,
+        onPathSubmit: @escaping () -> Void,
+        onGoUp: @escaping () -> Void,
+        onRefresh: @escaping () -> Void,
+        onSelect: @escaping (FilePaneRow) -> Void,
+        onOpen: @escaping (FilePaneRow) -> Void
+    ) {
+        self.title = title
+        self._pathText = pathText
+        self.systemImage = systemImage
+        self.rows = rows
+        self._selectedID = selectedID
+        self.showsPermissions = showsPermissions
+        self.columnWidthsStorageKey = columnWidthsStorageKey
+        self.emptyTitle = emptyTitle
+        self.emptyDescription = emptyDescription
+        self.onPathSubmit = onPathSubmit
+        self.onGoUp = onGoUp
+        self.onRefresh = onRefresh
+        self.onSelect = onSelect
+        self.onOpen = onOpen
+        self._storedColumnWidths = AppStorage(wrappedValue: Data(), columnWidthsStorageKey)
+    }
+
+    private var columnWidths: Binding<FilePaneColumnWidths> {
+        Binding(
+            get: {
+                FilePaneColumnWidths.load(from: storedColumnWidths)
+            },
+            set: { widths in
+                storedColumnWidths = widths.encoded()
+            }
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -780,7 +824,7 @@ private struct FilePane: View {
 
             GeometryReader { geometry in
                 let contentWidth = max(
-                    columnWidths.totalWidth(showsPermissions: showsPermissions),
+                    columnWidths.wrappedValue.totalWidth(showsPermissions: showsPermissions),
                     geometry.size.width - FilePaneTableMetrics.horizontalPadding
                 )
                 let tableWidth = contentWidth + FilePaneTableMetrics.horizontalPadding
@@ -788,7 +832,7 @@ private struct FilePane: View {
                 ScrollView(.horizontal) {
                     VStack(spacing: 0) {
                         FilePaneColumnHeader(
-                            columnWidths: $columnWidths,
+                            columnWidths: columnWidths,
                             showsPermissions: showsPermissions,
                             contentWidth: contentWidth
                         )
@@ -810,7 +854,7 @@ private struct FilePane: View {
                                         FilePaneRowView(
                                             row: row,
                                             isSelected: selectedID == row.id,
-                                            columnWidths: columnWidths,
+                                            columnWidths: columnWidths.wrappedValue,
                                             showsPermissions: showsPermissions,
                                             contentWidth: contentWidth,
                                             onSelect: {
@@ -833,12 +877,6 @@ private struct FilePane: View {
                     .frame(width: tableWidth)
                 }
             }
-        }
-        .onAppear {
-            columnWidths = FilePaneColumnWidths.load(for: columnWidthsStorageKey)
-        }
-        .onChange(of: columnWidths) {
-            columnWidths.save(for: columnWidthsStorageKey)
         }
     }
 }
@@ -1015,13 +1053,12 @@ private struct FilePaneColumnWidths: Codable, Equatable {
         name + size + modified + (showsPermissions ? permissions : 0)
     }
 
-    func save(for key: String) {
-        guard let data = try? JSONEncoder.hostDeck.encode(clamped) else { return }
-        UserDefaults.standard.set(data, forKey: key)
+    func encoded() -> Data {
+        (try? JSONEncoder.hostDeck.encode(clamped)) ?? Data()
     }
 
-    static func load(for key: String) -> FilePaneColumnWidths {
-        guard let data = UserDefaults.standard.data(forKey: key),
+    static func load(from data: Data) -> FilePaneColumnWidths {
+        guard !data.isEmpty,
               let widths = try? JSONDecoder.hostDeck.decode(FilePaneColumnWidths.self, from: data) else {
             return FilePaneColumnWidths()
         }

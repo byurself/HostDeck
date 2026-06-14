@@ -12,6 +12,7 @@ enum HostDeckPreferenceKeys {
     static let serverListFontSize = "serverListFontSize"
     static let fileBrowserFontFamily = "fileBrowserFontFamily"
     static let fileBrowserFontSize = "fileBrowserFontSize"
+    static let fileTransferSplitRatio = "fileTransferSplitRatio"
     static let maxConcurrentTransfers = "maxConcurrentTransfers"
     static let confirmUnknownHostKeys = "confirmUnknownHostKeys"
 }
@@ -28,6 +29,7 @@ enum HostDeckPreferenceDefaults {
     static let serverListFontSize = 13.0
     static let fileBrowserFontFamily = InterfaceFontFamily.monospaced
     static let fileBrowserFontSize = 12.0
+    static let fileTransferSplitRatio = 0.5
     static let maxConcurrentTransfers = 3
     static let confirmUnknownHostKeys = true
 }
