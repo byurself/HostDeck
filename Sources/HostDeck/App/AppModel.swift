@@ -117,7 +117,7 @@ final class AppModel {
     private var pendingTransfers: [TransferJob.ID: TransferWork] = [:]
     private var runningTransferTasks: [TransferJob.ID: Task<Void, Never>] = [:]
     private var credentialCache: [ServerProfile.ID: CredentialSecret] = [:]
-    private var didAttemptCredentialMigration = false
+    private var didAttemptBundledCredentialLoad = false
     private var terminalWindowSessions: [UUID: TerminalWindowSession] = [:]
     private var fileTransferWindowSessions: [UUID: FileTransferWindowSession] = [:]
     private var generalStatusMessage = "Ready"
@@ -145,6 +145,10 @@ final class AppModel {
         self.transferManager = TransferManager(store: transferStore)
         self.connectionTester = connectionTester
         refreshLocalDirectory()
+        HostDeckDiagnosticLog.write(
+            category: "AppModel",
+            "init profiles=\(profileStore.profiles.count) diagnosticLog=\(HostDeckDiagnosticLog.fileURL.path)"
+        )
     }
 
     var selectedServer: ServerProfile? {
@@ -199,7 +203,7 @@ final class AppModel {
     }
 
     var visibleTransferJobs: [TransferJob] {
-        Array(transferStore.jobs.prefix(4))
+        transferStore.jobs
     }
 
     func connectionState(for serverID: ServerProfile.ID) -> ConnectionState {
@@ -248,12 +252,19 @@ final class AppModel {
 
     func createTerminalTabForSelectedServer() {
         guard let profile = selectedServer else { return }
+        let serverLabel = diagnosticServerLabel(profile.id)
+        HostDeckDiagnosticLog.write(category: "Connection", "createTerminalTab begin server=\(serverLabel)")
 
         let id = UUID()
+        let secret = try? loadCachedSecret(for: profile.id)
+        HostDeckDiagnosticLog.write(
+            category: "Connection",
+            "createTerminalTab secretLoaded=\(secret != nil) server=\(serverLabel)"
+        )
         let session = TerminalWindowSession(
             id: id,
             profile: profile,
-            secret: try? loadCachedSecret(for: profile.id),
+            secret: secret,
             sshClient: makeSSHClient()
         )
         terminalWindowSessions[id] = session
@@ -266,6 +277,7 @@ final class AppModel {
         workspaceTabs.append(tab)
         selectedWorkspace = .terminal
         selectedWorkspaceTabID = tab.id
+        HostDeckDiagnosticLog.write(category: "Connection", "createTerminalTab end server=\(serverLabel)")
     }
 
     func terminalWindowSession(for id: UUID) -> TerminalWindowSession? {
@@ -274,12 +286,19 @@ final class AppModel {
 
     func createFileTransferTabForSelectedServer() {
         guard let profile = selectedServer else { return }
+        let serverLabel = diagnosticServerLabel(profile.id)
+        HostDeckDiagnosticLog.write(category: "Connection", "createFileTransferTab begin server=\(serverLabel)")
 
         let id = UUID()
+        let secret = try? loadCachedSecret(for: profile.id)
+        HostDeckDiagnosticLog.write(
+            category: "Connection",
+            "createFileTransferTab secretLoaded=\(secret != nil) server=\(serverLabel)"
+        )
         let session = FileTransferWindowSession(
             id: id,
             profile: profile,
-            secret: try? loadCachedSecret(for: profile.id),
+            secret: secret,
             sftpClient: makeSFTPClient()
         )
         fileTransferWindowSessions[id] = session
@@ -292,6 +311,7 @@ final class AppModel {
         workspaceTabs.append(tab)
         selectedWorkspace = .files
         selectedWorkspaceTabID = tab.id
+        HostDeckDiagnosticLog.write(category: "Connection", "createFileTransferTab end server=\(serverLabel)")
     }
 
     func fileTransferWindowSession(for id: UUID) -> FileTransferWindowSession? {
@@ -423,14 +443,18 @@ final class AppModel {
     func connectSelectedServer() async {
         guard let profile = selectedServer else { return }
         let serverID = profile.id
+        let serverLabel = diagnosticServerLabel(serverID)
+        HostDeckDiagnosticLog.write(category: "Connection", "connectSelectedServer begin server=\(serverLabel)")
         ensureSession(for: serverID)
         ensurePrimaryWorkspaceTab(for: .terminal, profile: profile, select: true)
 
         switch connectionState(for: serverID) {
         case .connected:
             setStatus("Already connected to \(profile.displayName)", for: serverID)
+            HostDeckDiagnosticLog.write(category: "Connection", "connectSelectedServer alreadyConnected server=\(serverLabel)")
             return
         case .connecting:
+            HostDeckDiagnosticLog.write(category: "Connection", "connectSelectedServer alreadyConnecting server=\(serverLabel)")
             return
         case .disconnected, .failed:
             break
@@ -450,7 +474,12 @@ final class AppModel {
         }
 
         do {
+            HostDeckDiagnosticLog.write(category: "Connection", "loadCachedSecret before server=\(serverLabel)")
             let secret = try? loadCachedSecret(for: serverID)
+            HostDeckDiagnosticLog.write(
+                category: "Connection",
+                "loadCachedSecret after secretLoaded=\(secret != nil) server=\(serverLabel)"
+            )
             let sshClient = sshClient(for: serverID)
             let sftpClient = sftpClient(for: serverID)
             let appModel = self
@@ -461,8 +490,12 @@ final class AppModel {
                 }
             }
 
+            HostDeckDiagnosticLog.write(category: "Connection", "ssh connect begin server=\(serverLabel)")
             try await sshClient.connect(profile: profile, secret: secret)
+            HostDeckDiagnosticLog.write(category: "Connection", "ssh connect success server=\(serverLabel)")
+            HostDeckDiagnosticLog.write(category: "Connection", "sftp connect begin server=\(serverLabel)")
             try await sftpClient.connect(profile: profile, secret: secret)
+            HostDeckDiagnosticLog.write(category: "Connection", "sftp connect success server=\(serverLabel)")
             let files = try await sftpClient.listDirectory(path: "/")
 
             updateSession(for: serverID) { session in
@@ -471,7 +504,12 @@ final class AppModel {
                 session.remotePath = "/"
                 session.remoteFiles = files
             }
+            HostDeckDiagnosticLog.write(category: "Connection", "connectSelectedServer success server=\(serverLabel)")
         } catch {
+            HostDeckDiagnosticLog.write(
+                category: "Connection",
+                "connectSelectedServer failed server=\(serverLabel) error=\(error.localizedDescription)"
+            )
             updateSession(for: serverID) { session in
                 session.connectionState = .failed(error.localizedDescription)
                 session.statusMessage = "Connection failed"
@@ -846,27 +884,41 @@ final class AppModel {
     }
 
     private func loadCachedSecret(for serverID: ServerProfile.ID) throws -> CredentialSecret? {
+        let serverLabel = diagnosticServerLabel(serverID)
+        HostDeckDiagnosticLog.write(category: "Credentials", "loadCachedSecret entry server=\(serverLabel)")
         if let secret = credentialCache[serverID] {
+            HostDeckDiagnosticLog.write(category: "Credentials", "loadCachedSecret app cache hit server=\(serverLabel)")
             return secret
         }
 
-        if !didAttemptCredentialMigration {
-            didAttemptCredentialMigration = true
-            let accountIDs = profileStore.profiles.map { $0.id.uuidString }
-            if let migrated = try? keychainStore.migrateLegacySecrets(for: accountIDs) {
-                for (account, secret) in migrated {
-                    if let id = UUID(uuidString: account) {
-                        credentialCache[id] = secret
-                    }
+        let accountIDs = [serverID.uuidString]
+
+        if !didAttemptBundledCredentialLoad {
+            didAttemptBundledCredentialLoad = true
+            HostDeckDiagnosticLog.write(category: "Credentials", "keychain load begin server=\(serverLabel)")
+            let secrets = try keychainStore.loadSecretsMigratingLegacyItems(for: accountIDs)
+            for (account, secret) in secrets {
+                if let id = UUID(uuidString: account) {
+                    credentialCache[id] = secret
                 }
             }
+            HostDeckDiagnosticLog.write(
+                category: "Credentials",
+                "keychain load end loadedCount=\(secrets.count) server=\(serverLabel)"
+            )
+        } else {
+            HostDeckDiagnosticLog.write(category: "Credentials", "keychain load skipped priorAttempt server=\(serverLabel)")
         }
 
-        let secret = try keychainStore.loadSecret(for: serverID.uuidString)
-        if let secret {
-            credentialCache[serverID] = secret
-        }
-        return secret
+        HostDeckDiagnosticLog.write(
+            category: "Credentials",
+            "loadCachedSecret exit secretLoaded=\(credentialCache[serverID] != nil) server=\(serverLabel)"
+        )
+        return credentialCache[serverID]
+    }
+
+    private func diagnosticServerLabel(_ serverID: ServerProfile.ID) -> String {
+        String(serverID.uuidString.prefix(8))
     }
 
     private func workStatusVerb(_ work: TransferWork) -> String {

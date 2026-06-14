@@ -5,17 +5,20 @@ struct SFTPBrowserView: View {
     @Bindable var appModel: AppModel
     @State private var selectedLocalFileID: LocalFile.ID?
     @State private var selectedRemoteFileID: RemoteFile.ID?
+    @State private var selectedLocalFileIDs: Set<LocalFile.ID> = []
+    @State private var selectedRemoteFileIDs: Set<RemoteFile.ID> = []
     @State private var localPathText = ""
     @State private var remotePathText = ""
     @State private var pendingConflict: TransferConflict?
+    @State private var isTransferQueueExpanded = true
     @AppStorage(HostDeckPreferenceKeys.fileTransferSplitRatio) private var filePaneSplitRatio = HostDeckPreferenceDefaults.fileTransferSplitRatio
 
-    @MainActor private var selectedLocalFile: LocalFile? {
-        appModel.localFiles.first { $0.id == selectedLocalFileID }
+    @MainActor private var selectedLocalFiles: [LocalFile] {
+        appModel.localFiles.filter { selectedLocalFileIDs.contains($0.id) }
     }
 
-    @MainActor private var selectedRemoteFile: RemoteFile? {
-        appModel.remoteFiles.first { $0.id == selectedRemoteFileID }
+    @MainActor private var selectedRemoteFiles: [RemoteFile] {
+        appModel.remoteFiles.filter { selectedRemoteFileIDs.contains($0.id) && $0.name != ".." }
     }
 
     @MainActor private var localFilePane: some View {
@@ -24,7 +27,8 @@ struct SFTPBrowserView: View {
             pathText: $localPathText,
             systemImage: "internaldrive",
             rows: appModel.localFiles.map(FilePaneRow.local),
-            selectedID: $selectedLocalFileID,
+            selectedIDs: $selectedLocalFileIDs,
+            activeSelectedID: $selectedLocalFileID,
             showsPermissions: false,
             columnWidthsStorageKey: FilePaneColumnWidths.StorageKey.local,
             emptyTitle: "No Local Files",
@@ -63,7 +67,8 @@ struct SFTPBrowserView: View {
             pathText: $remotePathText,
             systemImage: "network",
             rows: appModel.remoteFiles.map(FilePaneRow.remote),
-            selectedID: $selectedRemoteFileID,
+            selectedIDs: $selectedRemoteFileIDs,
+            activeSelectedID: $selectedRemoteFileID,
             showsPermissions: true,
             columnWidthsStorageKey: FilePaneColumnWidths.StorageKey.remote,
             emptyTitle: "No Remote Files",
@@ -111,18 +116,18 @@ struct SFTPBrowserView: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Button {
-                    beginUpload(selectedLocalFile)
+                    beginUpload(selectedLocalFiles)
                 } label: {
-                    Label("Upload", systemImage: "arrow.right")
+                    Label(selectedLocalFiles.count > 1 ? "Upload \(selectedLocalFiles.count)" : "Upload", systemImage: "arrow.right")
                 }
-                .disabled(selectedLocalFile == nil)
+                .disabled(selectedLocalFiles.isEmpty)
 
                 Button {
-                    beginDownload(selectedRemoteFile)
+                    beginDownload(selectedRemoteFiles)
                 } label: {
-                    Label("Download", systemImage: "arrow.left")
+                    Label(selectedRemoteFiles.count > 1 ? "Download \(selectedRemoteFiles.count)" : "Download", systemImage: "arrow.left")
                 }
-                .disabled(selectedRemoteFile == nil || selectedRemoteFile?.name == "..")
+                .disabled(selectedRemoteFiles.isEmpty)
 
                 Spacer()
 
@@ -148,6 +153,7 @@ struct SFTPBrowserView: View {
                 Divider()
                 TransferQueueStrip(
                     jobs: appModel.visibleTransferJobs,
+                    isExpanded: $isTransferQueueExpanded,
                     onCancel: { job in
                         appModel.cancelTransfer(job.id)
                     }
@@ -161,12 +167,17 @@ struct SFTPBrowserView: View {
         }
         .onChange(of: appModel.localPath) {
             localPathText = appModel.localPath.path
+            selectedLocalFileID = nil
+            selectedLocalFileIDs.removeAll()
         }
         .onChange(of: appModel.remotePath) {
             remotePathText = appModel.remotePath
+            selectedRemoteFileID = nil
+            selectedRemoteFileIDs.removeAll()
         }
         .onChange(of: appModel.selectedServerID) {
             selectedRemoteFileID = nil
+            selectedRemoteFileIDs.removeAll()
             remotePathText = appModel.remotePath
         }
         .sheet(item: $pendingConflict) { conflict in
@@ -176,16 +187,16 @@ struct SFTPBrowserView: View {
                     pendingConflict = nil
                 },
                 onSkip: {
-                    appModel.noteTransferSkipped(conflict.originalName)
                     pendingConflict = nil
+                    skipTransfer(conflict)
                 },
                 onReplace: {
-                    commitTransfer(conflict, renamedName: nil)
                     pendingConflict = nil
+                    commitTransfer(conflict, renamedName: nil)
                 },
                 onRename: {
-                    commitTransfer(conflict, renamedName: conflict.suggestedName)
                     pendingConflict = nil
+                    commitTransfer(conflict, renamedName: conflict.suggestedName)
                 }
             )
         }
@@ -193,47 +204,106 @@ struct SFTPBrowserView: View {
 
     @MainActor private func beginUpload(_ file: LocalFile?) {
         guard let file else { return }
-        let remoteNames = Set(appModel.remoteFiles.map(\.name))
+        beginUpload([file])
+    }
 
-        if remoteNames.contains(file.name) {
-            pendingConflict = TransferConflict(
-                direction: .upload,
-                localFile: file,
-                remoteFile: nil,
-                originalName: file.name,
-                suggestedName: uniqueTransferName(for: file.name, existingNames: remoteNames)
-            )
-            return
+    @MainActor private func beginUpload(_ files: [LocalFile]) {
+        processUpload(files, existingNames: Set(appModel.remoteFiles.map(\.name)))
+    }
+
+    @MainActor private func processUpload(_ files: [LocalFile], existingNames: Set<String>) {
+        var remainingFiles = files
+        var destinationNames = existingNames
+
+        while !remainingFiles.isEmpty {
+            let file = remainingFiles.removeFirst()
+
+            if destinationNames.contains(file.name) {
+                pendingConflict = TransferConflict(
+                    direction: .upload,
+                    localFile: file,
+                    remoteFile: nil,
+                    originalName: file.name,
+                    suggestedName: uniqueTransferName(for: file.name, existingNames: destinationNames),
+                    remainingLocalFiles: remainingFiles,
+                    remainingRemoteFiles: [],
+                    existingNames: destinationNames
+                )
+                return
+            }
+
+            appModel.queueUpload(file)
+            destinationNames.insert(file.name)
         }
-
-        appModel.queueUpload(file)
     }
 
     @MainActor private func beginDownload(_ file: RemoteFile?) {
         guard let file, file.name != ".." else { return }
-        let localNames = Set(appModel.localFiles.map(\.name))
+        beginDownload([file])
+    }
 
-        if localNames.contains(file.name) {
-            pendingConflict = TransferConflict(
-                direction: .download,
-                localFile: nil,
-                remoteFile: file,
-                originalName: file.name,
-                suggestedName: uniqueTransferName(for: file.name, existingNames: localNames)
-            )
-            return
+    @MainActor private func beginDownload(_ files: [RemoteFile]) {
+        processDownload(files.filter { $0.name != ".." }, existingNames: Set(appModel.localFiles.map(\.name)))
+    }
+
+    @MainActor private func processDownload(_ files: [RemoteFile], existingNames: Set<String>) {
+        var remainingFiles = files
+        var destinationNames = existingNames
+
+        while !remainingFiles.isEmpty {
+            let file = remainingFiles.removeFirst()
+
+            if destinationNames.contains(file.name) {
+                pendingConflict = TransferConflict(
+                    direction: .download,
+                    localFile: nil,
+                    remoteFile: file,
+                    originalName: file.name,
+                    suggestedName: uniqueTransferName(for: file.name, existingNames: destinationNames),
+                    remainingLocalFiles: [],
+                    remainingRemoteFiles: remainingFiles,
+                    existingNames: destinationNames
+                )
+                return
+            }
+
+            appModel.queueDownload(file)
+            destinationNames.insert(file.name)
         }
-
-        appModel.queueDownload(file)
     }
 
     @MainActor private func commitTransfer(_ conflict: TransferConflict, renamedName: String?) {
         switch conflict.direction {
         case .upload:
             appModel.queueUpload(conflict.localFile, remoteName: renamedName)
+            continueUpload(after: conflict, destinationName: renamedName ?? conflict.originalName)
         case .download:
             appModel.queueDownload(conflict.remoteFile, localName: renamedName)
+            continueDownload(after: conflict, destinationName: renamedName ?? conflict.originalName)
         }
+    }
+
+    @MainActor private func skipTransfer(_ conflict: TransferConflict) {
+        appModel.noteTransferSkipped(conflict.originalName)
+
+        switch conflict.direction {
+        case .upload:
+            processUpload(conflict.remainingLocalFiles, existingNames: conflict.existingNames)
+        case .download:
+            processDownload(conflict.remainingRemoteFiles, existingNames: conflict.existingNames)
+        }
+    }
+
+    @MainActor private func continueUpload(after conflict: TransferConflict, destinationName: String) {
+        var destinationNames = conflict.existingNames
+        destinationNames.insert(destinationName)
+        processUpload(conflict.remainingLocalFiles, existingNames: destinationNames)
+    }
+
+    @MainActor private func continueDownload(after conflict: TransferConflict, destinationName: String) {
+        var destinationNames = conflict.existingNames
+        destinationNames.insert(destinationName)
+        processDownload(conflict.remainingRemoteFiles, existingNames: destinationNames)
     }
 
     private func uniqueTransferName(for name: String, existingNames: Set<String>) -> String {
@@ -258,17 +328,20 @@ struct SFTPDetachedWindowView: View {
     @Bindable var session: FileTransferWindowSession
     @State private var selectedLocalFileID: LocalFile.ID?
     @State private var selectedRemoteFileID: RemoteFile.ID?
+    @State private var selectedLocalFileIDs: Set<LocalFile.ID> = []
+    @State private var selectedRemoteFileIDs: Set<RemoteFile.ID> = []
     @State private var localPathText = ""
     @State private var remotePathText = ""
     @State private var pendingConflict: TransferConflict?
+    @State private var isTransferQueueExpanded = true
     @AppStorage(HostDeckPreferenceKeys.fileTransferSplitRatio) private var filePaneSplitRatio = HostDeckPreferenceDefaults.fileTransferSplitRatio
 
-    @MainActor private var selectedLocalFile: LocalFile? {
-        session.localFiles.first { $0.id == selectedLocalFileID }
+    @MainActor private var selectedLocalFiles: [LocalFile] {
+        session.localFiles.filter { selectedLocalFileIDs.contains($0.id) }
     }
 
-    @MainActor private var selectedRemoteFile: RemoteFile? {
-        session.remoteFiles.first { $0.id == selectedRemoteFileID }
+    @MainActor private var selectedRemoteFiles: [RemoteFile] {
+        session.remoteFiles.filter { selectedRemoteFileIDs.contains($0.id) && $0.name != ".." }
     }
 
     @MainActor private var localFilePane: some View {
@@ -277,7 +350,8 @@ struct SFTPDetachedWindowView: View {
             pathText: $localPathText,
             systemImage: "internaldrive",
             rows: session.localFiles.map(FilePaneRow.local),
-            selectedID: $selectedLocalFileID,
+            selectedIDs: $selectedLocalFileIDs,
+            activeSelectedID: $selectedLocalFileID,
             showsPermissions: false,
             columnWidthsStorageKey: FilePaneColumnWidths.StorageKey.local,
             emptyTitle: "No Local Files",
@@ -316,7 +390,8 @@ struct SFTPDetachedWindowView: View {
             pathText: $remotePathText,
             systemImage: "network",
             rows: session.remoteFiles.map(FilePaneRow.remote),
-            selectedID: $selectedRemoteFileID,
+            selectedIDs: $selectedRemoteFileIDs,
+            activeSelectedID: $selectedRemoteFileID,
             showsPermissions: true,
             columnWidthsStorageKey: FilePaneColumnWidths.StorageKey.remote,
             emptyTitle: "No Remote Files",
@@ -364,18 +439,18 @@ struct SFTPDetachedWindowView: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Button {
-                    beginUpload(selectedLocalFile)
+                    beginUpload(selectedLocalFiles)
                 } label: {
-                    Label("Upload", systemImage: "arrow.right")
+                    Label(selectedLocalFiles.count > 1 ? "Upload \(selectedLocalFiles.count)" : "Upload", systemImage: "arrow.right")
                 }
-                .disabled(selectedLocalFile == nil)
+                .disabled(selectedLocalFiles.isEmpty)
 
                 Button {
-                    beginDownload(selectedRemoteFile)
+                    beginDownload(selectedRemoteFiles)
                 } label: {
-                    Label("Download", systemImage: "arrow.left")
+                    Label(selectedRemoteFiles.count > 1 ? "Download \(selectedRemoteFiles.count)" : "Download", systemImage: "arrow.left")
                 }
-                .disabled(selectedRemoteFile == nil || selectedRemoteFile?.name == "..")
+                .disabled(selectedRemoteFiles.isEmpty)
 
                 Spacer()
 
@@ -404,6 +479,7 @@ struct SFTPDetachedWindowView: View {
                 Divider()
                 TransferQueueStrip(
                     jobs: appModel.visibleTransferJobs,
+                    isExpanded: $isTransferQueueExpanded,
                     onCancel: { job in
                         appModel.cancelTransfer(job.id)
                     }
@@ -417,9 +493,13 @@ struct SFTPDetachedWindowView: View {
         }
         .onChange(of: session.localPath) {
             localPathText = session.localPath.path
+            selectedLocalFileID = nil
+            selectedLocalFileIDs.removeAll()
         }
         .onChange(of: session.remotePath) {
             remotePathText = session.remotePath
+            selectedRemoteFileID = nil
+            selectedRemoteFileIDs.removeAll()
         }
         .sheet(item: $pendingConflict) { conflict in
             TransferConflictSheet(
@@ -428,16 +508,16 @@ struct SFTPDetachedWindowView: View {
                     pendingConflict = nil
                 },
                 onSkip: {
-                    appModel.noteTransferSkipped(conflict.originalName)
                     pendingConflict = nil
+                    skipTransfer(conflict)
                 },
                 onReplace: {
-                    commitTransfer(conflict, renamedName: nil)
                     pendingConflict = nil
+                    commitTransfer(conflict, renamedName: nil)
                 },
                 onRename: {
-                    commitTransfer(conflict, renamedName: conflict.suggestedName)
                     pendingConflict = nil
+                    commitTransfer(conflict, renamedName: conflict.suggestedName)
                 }
             )
         }
@@ -445,43 +525,77 @@ struct SFTPDetachedWindowView: View {
 
     @MainActor private func beginUpload(_ file: LocalFile?) {
         guard let file else { return }
-        let remoteNames = Set(session.remoteFiles.map(\.name))
+        beginUpload([file])
+    }
 
-        if remoteNames.contains(file.name) {
-            pendingConflict = TransferConflict(
-                direction: .upload,
-                localFile: file,
-                remoteFile: nil,
-                originalName: file.name,
-                suggestedName: uniqueTransferName(for: file.name, existingNames: remoteNames)
-            )
-            return
+    @MainActor private func beginUpload(_ files: [LocalFile]) {
+        processUpload(files, existingNames: Set(session.remoteFiles.map(\.name)))
+    }
+
+    @MainActor private func processUpload(_ files: [LocalFile], existingNames: Set<String>) {
+        var remainingFiles = files
+        var destinationNames = existingNames
+
+        while !remainingFiles.isEmpty {
+            let file = remainingFiles.removeFirst()
+
+            if destinationNames.contains(file.name) {
+                pendingConflict = TransferConflict(
+                    direction: .upload,
+                    localFile: file,
+                    remoteFile: nil,
+                    originalName: file.name,
+                    suggestedName: uniqueTransferName(for: file.name, existingNames: destinationNames),
+                    remainingLocalFiles: remainingFiles,
+                    remainingRemoteFiles: [],
+                    existingNames: destinationNames
+                )
+                return
+            }
+
+            appModel.queueUpload(file, serverID: session.profile.id, remoteDirectory: session.remotePath)
+            destinationNames.insert(file.name)
         }
-
-        appModel.queueUpload(file, serverID: session.profile.id, remoteDirectory: session.remotePath)
     }
 
     @MainActor private func beginDownload(_ file: RemoteFile?) {
         guard let file, file.name != ".." else { return }
-        let localNames = Set(session.localFiles.map(\.name))
+        beginDownload([file])
+    }
 
-        if localNames.contains(file.name) {
-            pendingConflict = TransferConflict(
-                direction: .download,
-                localFile: nil,
-                remoteFile: file,
-                originalName: file.name,
-                suggestedName: uniqueTransferName(for: file.name, existingNames: localNames)
+    @MainActor private func beginDownload(_ files: [RemoteFile]) {
+        processDownload(files.filter { $0.name != ".." }, existingNames: Set(session.localFiles.map(\.name)))
+    }
+
+    @MainActor private func processDownload(_ files: [RemoteFile], existingNames: Set<String>) {
+        var remainingFiles = files
+        var destinationNames = existingNames
+
+        while !remainingFiles.isEmpty {
+            let file = remainingFiles.removeFirst()
+
+            if destinationNames.contains(file.name) {
+                pendingConflict = TransferConflict(
+                    direction: .download,
+                    localFile: nil,
+                    remoteFile: file,
+                    originalName: file.name,
+                    suggestedName: uniqueTransferName(for: file.name, existingNames: destinationNames),
+                    remainingLocalFiles: [],
+                    remainingRemoteFiles: remainingFiles,
+                    existingNames: destinationNames
+                )
+                return
+            }
+
+            appModel.queueDownload(
+                file,
+                serverID: session.profile.id,
+                remoteDirectory: session.remotePath,
+                localDirectory: session.localPath
             )
-            return
+            destinationNames.insert(file.name)
         }
-
-        appModel.queueDownload(
-            file,
-            serverID: session.profile.id,
-            remoteDirectory: session.remotePath,
-            localDirectory: session.localPath
-        )
     }
 
     @MainActor private func commitTransfer(_ conflict: TransferConflict, renamedName: String?) {
@@ -493,6 +607,7 @@ struct SFTPDetachedWindowView: View {
                 remoteDirectory: session.remotePath,
                 remoteName: renamedName
             )
+            continueUpload(after: conflict, destinationName: renamedName ?? conflict.originalName)
         case .download:
             appModel.queueDownload(
                 conflict.remoteFile,
@@ -501,7 +616,31 @@ struct SFTPDetachedWindowView: View {
                 localDirectory: session.localPath,
                 localName: renamedName
             )
+            continueDownload(after: conflict, destinationName: renamedName ?? conflict.originalName)
         }
+    }
+
+    @MainActor private func skipTransfer(_ conflict: TransferConflict) {
+        appModel.noteTransferSkipped(conflict.originalName)
+
+        switch conflict.direction {
+        case .upload:
+            processUpload(conflict.remainingLocalFiles, existingNames: conflict.existingNames)
+        case .download:
+            processDownload(conflict.remainingRemoteFiles, existingNames: conflict.existingNames)
+        }
+    }
+
+    @MainActor private func continueUpload(after conflict: TransferConflict, destinationName: String) {
+        var destinationNames = conflict.existingNames
+        destinationNames.insert(destinationName)
+        processUpload(conflict.remainingLocalFiles, existingNames: destinationNames)
+    }
+
+    @MainActor private func continueDownload(after conflict: TransferConflict, destinationName: String) {
+        var destinationNames = conflict.existingNames
+        destinationNames.insert(destinationName)
+        processDownload(conflict.remainingRemoteFiles, existingNames: destinationNames)
     }
 
     private func uniqueTransferName(for name: String, existingNames: Set<String>) -> String {
@@ -533,6 +672,9 @@ private struct TransferConflict: Identifiable {
     var remoteFile: RemoteFile?
     var originalName: String
     var suggestedName: String
+    var remainingLocalFiles: [LocalFile]
+    var remainingRemoteFiles: [RemoteFile]
+    var existingNames: Set<String>
 
     var actionName: String {
         switch direction {
@@ -755,7 +897,8 @@ private struct FilePane: View {
     @Binding var pathText: String
     let systemImage: String
     let rows: [FilePaneRow]
-    @Binding var selectedID: String?
+    @Binding var selectedIDs: Set<String>
+    @Binding var activeSelectedID: String?
     let showsPermissions: Bool
     let columnWidthsStorageKey: String
     let emptyTitle: String
@@ -772,7 +915,8 @@ private struct FilePane: View {
         pathText: Binding<String>,
         systemImage: String,
         rows: [FilePaneRow],
-        selectedID: Binding<String?>,
+        selectedIDs: Binding<Set<String>>,
+        activeSelectedID: Binding<String?>,
         showsPermissions: Bool,
         columnWidthsStorageKey: String,
         emptyTitle: String,
@@ -787,7 +931,8 @@ private struct FilePane: View {
         self._pathText = pathText
         self.systemImage = systemImage
         self.rows = rows
-        self._selectedID = selectedID
+        self._selectedIDs = selectedIDs
+        self._activeSelectedID = activeSelectedID
         self.showsPermissions = showsPermissions
         self.columnWidthsStorageKey = columnWidthsStorageKey
         self.emptyTitle = emptyTitle
@@ -853,16 +998,16 @@ private struct FilePane: View {
                                     ForEach(rows) { row in
                                         FilePaneRowView(
                                             row: row,
-                                            isSelected: selectedID == row.id,
+                                            isSelected: selectedIDs.contains(row.id),
                                             columnWidths: columnWidths.wrappedValue,
                                             showsPermissions: showsPermissions,
                                             contentWidth: contentWidth,
                                             onSelect: {
-                                                selectedID = row.selectableID
+                                                select(row)
                                                 onSelect(row)
                                             },
                                             onOpen: {
-                                                selectedID = row.selectableID
+                                                selectSingle(row)
                                                 onSelect(row)
                                                 onOpen(row)
                                             }
@@ -878,6 +1023,45 @@ private struct FilePane: View {
                 }
             }
         }
+    }
+
+    private func select(_ row: FilePaneRow) {
+        guard let rowID = row.selectableID else {
+            selectedIDs.removeAll()
+            activeSelectedID = nil
+            return
+        }
+
+        let modifierFlags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        if modifierFlags.contains(.shift),
+           let anchorID = activeSelectedID,
+           let anchorIndex = rows.firstIndex(where: { $0.id == anchorID }),
+           let rowIndex = rows.firstIndex(where: { $0.id == rowID }) {
+            let bounds = min(anchorIndex, rowIndex)...max(anchorIndex, rowIndex)
+            selectedIDs = Set(rows[bounds].compactMap(\.selectableID))
+        } else if modifierFlags.contains(.command) {
+            if selectedIDs.contains(rowID) {
+                selectedIDs.remove(rowID)
+            } else {
+                selectedIDs.insert(rowID)
+            }
+            activeSelectedID = rowID
+        } else {
+            selectedIDs = [rowID]
+            activeSelectedID = rowID
+        }
+    }
+
+    private func selectSingle(_ row: FilePaneRow) {
+        guard let rowID = row.selectableID else {
+            selectedIDs.removeAll()
+            activeSelectedID = nil
+            return
+        }
+
+        selectedIDs = [rowID]
+        activeSelectedID = rowID
     }
 }
 
@@ -1197,31 +1381,78 @@ private final class CursorRectNSView: NSView {
 
 private struct TransferQueueStrip: View {
     let jobs: [TransferJob]
+    @Binding var isExpanded: Bool
     let onCancel: (TransferJob) -> Void
+    private let maxExpandedHeight: CGFloat = 260
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.borderless)
+                .help(isExpanded ? "Minimize Transfer Queue" : "Expand Transfer Queue")
+
                 Text("Transfer Queue")
                     .font(.caption.weight(.semibold))
+
                 Spacer()
-                Text("\(jobs.count) shown")
+
+                Text(summaryText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isExpanded.toggle()
+                }
+            }
 
-            ForEach(jobs) { job in
-                TransferProgressRow(
-                    job: job,
-                    onCancel: {
-                        onCancel(job)
+            if isExpanded {
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: 8) {
+                        ForEach(jobs) { job in
+                            TransferProgressRow(
+                                job: job,
+                                onCancel: {
+                                    onCancel(job)
+                                }
+                            )
+                        }
                     }
-                )
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 8)
+                }
+                .scrollIndicators(.visible)
+                .frame(maxHeight: maxExpandedHeight)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 8)
         .background(.bar)
+    }
+
+    private var summaryText: String {
+        let runningCount = jobs.filter { $0.status == .running }.count
+        let queuedCount = jobs.filter { $0.status == .queued }.count
+
+        if runningCount > 0 {
+            return "\(runningCount) active, \(queuedCount) queued"
+        }
+
+        if queuedCount > 0 {
+            return "\(queuedCount) queued"
+        }
+
+        return "\(jobs.count) shown"
     }
 }
 
