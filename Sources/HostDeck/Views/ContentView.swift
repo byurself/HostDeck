@@ -22,6 +22,15 @@ struct ContentView: View {
                 .frame(width: 300)
 
                 Button {
+                    appModel.editingServer = appModel.selectedServer
+                    appModel.isPresentingServerEditor = true
+                } label: {
+                    Label("Edit Server", systemImage: "slider.horizontal.3")
+                }
+                .disabled(appModel.selectedServer == nil)
+                .help("Edit Server")
+
+                Button {
                     appModel.createTerminalTabForSelectedServer()
                 } label: {
                     Label("New Terminal", systemImage: "terminal")

@@ -3,6 +3,7 @@ import AppKit
 
 struct SFTPBrowserView: View {
     @Bindable var appModel: AppModel
+    let serverID: ServerProfile.ID?
     @State private var selectedLocalFileID: LocalFile.ID?
     @State private var selectedRemoteFileID: RemoteFile.ID?
     @State private var selectedLocalFileIDs: Set<LocalFile.ID> = []
@@ -10,7 +11,7 @@ struct SFTPBrowserView: View {
     @State private var localPathText = ""
     @State private var remotePathText = ""
     @State private var pendingConflict: TransferConflict?
-    @State private var isTransferQueueExpanded = true
+    @State private var isTransferQueueExpanded = false
     @AppStorage(HostDeckPreferenceKeys.fileTransferSplitRatio) private var filePaneSplitRatio = HostDeckPreferenceDefaults.fileTransferSplitRatio
 
     @MainActor private var selectedLocalFiles: [LocalFile] {
@@ -18,7 +19,27 @@ struct SFTPBrowserView: View {
     }
 
     @MainActor private var selectedRemoteFiles: [RemoteFile] {
-        appModel.remoteFiles.filter { selectedRemoteFileIDs.contains($0.id) && $0.name != ".." }
+        remoteFiles.filter { selectedRemoteFileIDs.contains($0.id) && $0.name != ".." }
+    }
+
+    @MainActor private var remoteFiles: [RemoteFile] {
+        guard let serverID else { return [] }
+        return appModel.remoteFiles(for: serverID)
+    }
+
+    @MainActor private var currentRemotePath: String {
+        guard let serverID else { return "/" }
+        return appModel.remotePath(for: serverID)
+    }
+
+    @MainActor private var remoteConnectionState: ConnectionState {
+        guard let serverID else { return .disconnected }
+        return appModel.connectionState(for: serverID)
+    }
+
+    @MainActor private var remoteTitle: String {
+        guard let serverID, let profile = appModel.profile(for: serverID) else { return "Remote" }
+        return profile.host
     }
 
     @MainActor private var localFilePane: some View {
@@ -63,32 +84,35 @@ struct SFTPBrowserView: View {
 
     @MainActor private var remoteFilePane: some View {
         FilePane(
-            title: appModel.selectedServer?.host ?? "Remote",
+            title: remoteTitle,
             pathText: $remotePathText,
             systemImage: "network",
-            rows: appModel.remoteFiles.map(FilePaneRow.remote),
+            rows: remoteFiles.map(FilePaneRow.remote),
             selectedIDs: $selectedRemoteFileIDs,
             activeSelectedID: $selectedRemoteFileID,
             showsPermissions: true,
             columnWidthsStorageKey: FilePaneColumnWidths.StorageKey.remote,
             emptyTitle: "No Remote Files",
-            emptyDescription: appModel.connectionState.isConnected ? "This folder is empty." : "Connect to browse remote files.",
+            emptyDescription: remoteConnectionState.isConnected ? "This folder is empty." : "Connect to browse remote files.",
             onPathSubmit: {
+                guard let serverID else { return }
                 Task {
-                    await appModel.openRemotePath(remotePathText)
-                    remotePathText = appModel.remotePath
+                    await appModel.openRemotePath(remotePathText, for: serverID)
+                    remotePathText = appModel.remotePath(for: serverID)
                 }
             },
             onGoUp: {
+                guard let serverID else { return }
                 Task {
-                    await appModel.goUpRemoteDirectory()
-                    remotePathText = appModel.remotePath
+                    await appModel.goUpRemoteDirectory(for: serverID)
+                    remotePathText = appModel.remotePath(for: serverID)
                 }
             },
             onRefresh: {
+                guard let serverID else { return }
                 Task {
-                    await appModel.refreshRemoteDirectory()
-                    remotePathText = appModel.remotePath
+                    await appModel.refreshRemoteDirectory(for: serverID)
+                    remotePathText = appModel.remotePath(for: serverID)
                 }
             },
             onSelect: { row in
@@ -98,9 +122,10 @@ struct SFTPBrowserView: View {
                 switch row {
                 case .remote(let file):
                     if file.kind == .directory {
+                        guard let serverID else { return }
                         Task {
-                            await appModel.openRemoteFile(file)
-                            remotePathText = appModel.remotePath
+                            await appModel.openRemoteFile(file, for: serverID)
+                            remotePathText = appModel.remotePath(for: serverID)
                         }
                     } else {
                         beginDownload(file)
@@ -120,7 +145,7 @@ struct SFTPBrowserView: View {
                 } label: {
                     Label(selectedLocalFiles.count > 1 ? "Upload \(selectedLocalFiles.count)" : "Upload", systemImage: "arrow.right")
                 }
-                .disabled(selectedLocalFiles.isEmpty)
+                .disabled(selectedLocalFiles.isEmpty || serverID == nil)
 
                 Button {
                     beginDownload(selectedRemoteFiles)
@@ -132,7 +157,8 @@ struct SFTPBrowserView: View {
                 Spacer()
 
                 Button {
-                    Task { await appModel.prepareFileTransferWorkspace() }
+                    guard let serverID else { return }
+                    Task { await appModel.prepareFileTransferWorkspace(for: serverID) }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -163,22 +189,28 @@ struct SFTPBrowserView: View {
         .onAppear {
             appModel.refreshLocalDirectory()
             localPathText = appModel.localPath.path
-            remotePathText = appModel.remotePath
+            remotePathText = currentRemotePath
+            if let serverID {
+                Task {
+                    await appModel.prepareFileTransferWorkspace(for: serverID)
+                    remotePathText = appModel.remotePath(for: serverID)
+                }
+            }
         }
         .onChange(of: appModel.localPath) {
             localPathText = appModel.localPath.path
             selectedLocalFileID = nil
             selectedLocalFileIDs.removeAll()
         }
-        .onChange(of: appModel.remotePath) {
-            remotePathText = appModel.remotePath
+        .onChange(of: currentRemotePath) {
+            remotePathText = currentRemotePath
             selectedRemoteFileID = nil
             selectedRemoteFileIDs.removeAll()
         }
-        .onChange(of: appModel.selectedServerID) {
+        .onChange(of: serverID) {
             selectedRemoteFileID = nil
             selectedRemoteFileIDs.removeAll()
-            remotePathText = appModel.remotePath
+            remotePathText = currentRemotePath
         }
         .sheet(item: $pendingConflict) { conflict in
             TransferConflictSheet(
@@ -208,7 +240,7 @@ struct SFTPBrowserView: View {
     }
 
     @MainActor private func beginUpload(_ files: [LocalFile]) {
-        processUpload(files, existingNames: Set(appModel.remoteFiles.map(\.name)))
+        processUpload(files, existingNames: Set(remoteFiles.map(\.name)))
     }
 
     @MainActor private func processUpload(_ files: [LocalFile], existingNames: Set<String>) {
@@ -232,7 +264,12 @@ struct SFTPBrowserView: View {
                 return
             }
 
-            appModel.queueUpload(file)
+            guard let serverID else { return }
+            appModel.queueUpload(
+                file,
+                serverID: serverID,
+                remoteDirectory: currentRemotePath
+            )
             destinationNames.insert(file.name)
         }
     }
@@ -267,24 +304,47 @@ struct SFTPBrowserView: View {
                 return
             }
 
-            appModel.queueDownload(file)
+            guard let serverID else { return }
+            appModel.queueDownload(
+                file,
+                serverID: serverID,
+                remoteDirectory: currentRemotePath,
+                localDirectory: appModel.localPath
+            )
             destinationNames.insert(file.name)
         }
     }
 
     @MainActor private func commitTransfer(_ conflict: TransferConflict, renamedName: String?) {
+        guard let serverID else { return }
+
         switch conflict.direction {
         case .upload:
-            appModel.queueUpload(conflict.localFile, remoteName: renamedName)
+            appModel.queueUpload(
+                conflict.localFile,
+                serverID: serverID,
+                remoteDirectory: currentRemotePath,
+                remoteName: renamedName
+            )
             continueUpload(after: conflict, destinationName: renamedName ?? conflict.originalName)
         case .download:
-            appModel.queueDownload(conflict.remoteFile, localName: renamedName)
+            appModel.queueDownload(
+                conflict.remoteFile,
+                serverID: serverID,
+                remoteDirectory: currentRemotePath,
+                localDirectory: appModel.localPath,
+                localName: renamedName
+            )
             continueDownload(after: conflict, destinationName: renamedName ?? conflict.originalName)
         }
     }
 
     @MainActor private func skipTransfer(_ conflict: TransferConflict) {
-        appModel.noteTransferSkipped(conflict.originalName)
+        if let serverID {
+            appModel.noteTransferSkipped(conflict.originalName, for: serverID)
+        } else {
+            appModel.noteTransferSkipped(conflict.originalName)
+        }
 
         switch conflict.direction {
         case .upload:
@@ -333,7 +393,7 @@ struct SFTPDetachedWindowView: View {
     @State private var localPathText = ""
     @State private var remotePathText = ""
     @State private var pendingConflict: TransferConflict?
-    @State private var isTransferQueueExpanded = true
+    @State private var isTransferQueueExpanded = false
     @AppStorage(HostDeckPreferenceKeys.fileTransferSplitRatio) private var filePaneSplitRatio = HostDeckPreferenceDefaults.fileTransferSplitRatio
 
     @MainActor private var selectedLocalFiles: [LocalFile] {
@@ -621,7 +681,7 @@ struct SFTPDetachedWindowView: View {
     }
 
     @MainActor private func skipTransfer(_ conflict: TransferConflict) {
-        appModel.noteTransferSkipped(conflict.originalName)
+        appModel.noteTransferSkipped(conflict.originalName, for: session.profile.id)
 
         switch conflict.direction {
         case .upload:
@@ -1383,69 +1443,102 @@ private struct TransferQueueStrip: View {
     let jobs: [TransferJob]
     @Binding var isExpanded: Bool
     let onCancel: (TransferJob) -> Void
-    private let maxExpandedHeight: CGFloat = 260
+    private let maxExpandedHeight: CGFloat = 180
+    private let rowHeight: CGFloat = 37
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        isExpanded.toggle()
-                    }
-                } label: {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.borderless)
-                .help(isExpanded ? "Minimize Transfer Queue" : "Expand Transfer Queue")
-
-                Text("Transfer Queue")
-                    .font(.caption.weight(.semibold))
-
-                Spacer()
-
-                Text(summaryText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
+            Button {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     isExpanded.toggle()
                 }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
+
+                    Text("Transfer Queue")
+                        .font(.caption.weight(.semibold))
+
+                    if let summaryJob {
+                        Divider()
+                            .frame(height: 14)
+
+                        TransferQueueSummary(job: summaryJob)
+                    }
+
+                    Spacer(minLength: 10)
+
+                    Text(summaryCountText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
+            .help(isExpanded ? "Minimize Transfer Queue" : "Expand Transfer Queue")
 
             if isExpanded {
-                ScrollView(.vertical) {
-                    LazyVStack(spacing: 8) {
-                        ForEach(jobs) { job in
-                            TransferProgressRow(
-                                job: job,
-                                onCancel: {
-                                    onCancel(job)
-                                }
-                            )
+                Divider()
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 12) {
+                        Text("Name")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Status")
+                            .frame(width: 78, alignment: .leading)
+                        Text("Size")
+                            .frame(width: 92, alignment: .trailing)
+                        Text("Progress")
+                            .frame(width: 72, alignment: .trailing)
+                        Color.clear
+                            .frame(width: 24)
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 7)
+                    .padding(.bottom, 5)
+
+                    ScrollView(.vertical) {
+                        LazyVStack(spacing: 0) {
+                            ForEach(jobs) { job in
+                                TransferProgressRow(
+                                    job: job,
+                                    onCancel: {
+                                        onCancel(job)
+                                    }
+                                )
+                            }
                         }
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 8)
+                    .scrollIndicators(.visible)
+                    .frame(height: listHeight)
                 }
-                .scrollIndicators(.visible)
-                .frame(maxHeight: maxExpandedHeight)
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
+        .fixedSize(horizontal: false, vertical: true)
         .background(.bar)
     }
 
-    private var summaryText: String {
+    private var summaryJob: TransferJob? {
+        jobs.first { $0.status == .running }
+            ?? jobs.first { $0.status == .queued }
+            ?? jobs.first { $0.status == .failed }
+            ?? jobs.first
+    }
+
+    private var summaryCountText: String {
         let runningCount = jobs.filter { $0.status == .running }.count
         let queuedCount = jobs.filter { $0.status == .queued }.count
 
         if runningCount > 0 {
-            return "\(runningCount) active, \(queuedCount) queued"
+            return queuedCount > 0 ? "\(runningCount) active, \(queuedCount) queued" : "\(runningCount) active"
         }
 
         if queuedCount > 0 {
@@ -1454,79 +1547,59 @@ private struct TransferQueueStrip: View {
 
         return "\(jobs.count) shown"
     }
+
+    private var listHeight: CGFloat {
+        min(max(CGFloat(jobs.count) * rowHeight, rowHeight), maxExpandedHeight)
+    }
 }
 
-private struct TransferProgressRow: View {
+private struct TransferQueueSummary: View {
     let job: TransferJob
-    let onCancel: () -> Void
-    @AppStorage(HostDeckPreferenceKeys.transferListFontFamily) private var transferListFontFamily = HostDeckPreferenceDefaults.transferListFontFamily.rawValue
-    @AppStorage(HostDeckPreferenceKeys.transferListFontSize) private var transferListFontSize = HostDeckPreferenceDefaults.transferListFontSize
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 7) {
             Image(systemName: iconName)
                 .foregroundStyle(statusColor)
-                .frame(width: 18)
+                .frame(width: 14)
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(title)
-                        .font(rowFont(weight: .semibold))
-                        .lineLimit(1)
-                    Spacer()
-                    Text(percentText)
-                        .font(rowFont())
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
+            Text(summaryText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(.secondary)
 
+            if job.status == .running {
                 ProgressView(value: job.progress)
                     .progressViewStyle(.linear)
-
-                HStack(spacing: 12) {
-                    Text("\(Formatters.byteCount.string(fromByteCount: job.transferredBytes)) of \(Formatters.byteCount.string(fromByteCount: job.totalBytes))")
-                    Text(job.speedText)
-                    if let errorMessage = job.errorMessage {
-                        Text(errorMessage)
-                            .lineLimit(1)
-                    }
-                }
-                .font(rowFont(sizeOffset: -2))
-                .foregroundStyle(.secondary)
-            }
-
-            if job.canCancel {
-                Button(action: onCancel) {
-                    Image(systemName: "xmark.circle")
-                }
-                .buttonStyle(.borderless)
-                .help("Cancel Transfer")
+                    .frame(width: 92)
             }
         }
+        .font(.caption)
     }
 
-    private func rowFont(sizeOffset: Double = 0, weight: Font.Weight = .regular) -> Font {
-        InterfaceFontFamily.value(for: transferListFontFamily).font(size: transferListFontSize + sizeOffset, weight: weight)
+    private var summaryText: String {
+        "\(verb) \(job.filename) · \(sizeText) · \(progressText)"
     }
 
-    private var title: String {
-        let verb: String
+    private var verb: String {
         switch job.status {
         case .running:
-            verb = job.direction == .download ? "Downloading" : "Uploading"
+            return job.direction == .download ? "Downloading" : "Uploading"
         case .completed:
-            verb = job.direction == .download ? "Downloaded" : "Uploaded"
+            return job.direction == .download ? "Downloaded" : "Uploaded"
         case .failed:
-            verb = "Failed"
+            return "Failed"
         case .queued:
-            verb = "Queued"
+            return "Queued"
         case .cancelled:
-            verb = "Cancelled"
+            return "Cancelled"
         }
-        return "\(verb) \(job.filename)"
     }
 
-    private var percentText: String {
+    private var sizeText: String {
+        Formatters.byteCount.string(fromByteCount: max(job.totalBytes, job.transferredBytes))
+    }
+
+    private var progressText: String {
         "\(Int((job.progress * 100).rounded()))%"
     }
 
@@ -1536,6 +1609,8 @@ private struct TransferProgressRow: View {
             return "checkmark.circle.fill"
         case .failed:
             return "exclamationmark.triangle.fill"
+        case .cancelled:
+            return "xmark.circle"
         default:
             return job.direction == .download ? "arrow.down.circle" : "arrow.up.circle"
         }
@@ -1549,7 +1624,140 @@ private struct TransferProgressRow: View {
             return .red
         case .queued, .cancelled:
             return .secondary
+        case .running:
+            return .accentColor
+        }
+    }
+}
+
+private struct TransferProgressRow: View {
+    let job: TransferJob
+    let onCancel: () -> Void
+    @AppStorage(HostDeckPreferenceKeys.transferListFontFamily) private var transferListFontFamily = HostDeckPreferenceDefaults.transferListFontFamily.rawValue
+    @AppStorage(HostDeckPreferenceKeys.transferListFontSize) private var transferListFontSize = HostDeckPreferenceDefaults.transferListFontSize
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: iconName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(statusColor)
+                    .frame(width: 18)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(job.filename)
+                        .font(rowFont(weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    if let errorMessage = job.errorMessage {
+                        Text(errorMessage)
+                            .font(rowFont(sizeOffset: -2))
+                            .foregroundStyle(.red)
+                            .lineLimit(1)
+                    } else if showsProgressBar {
+                        ProgressView(value: job.progress)
+                            .progressViewStyle(.linear)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(statusText)
+                    .font(rowFont(sizeOffset: -2, weight: .semibold))
+                    .foregroundStyle(statusColor)
+                    .frame(width: 78, alignment: .leading)
+
+                Text(sizeText)
+                    .font(rowFont(sizeOffset: -2))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 92, alignment: .trailing)
+
+                Text(speedOrProgressText)
+                    .font(rowFont(sizeOffset: -2))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .frame(width: 72, alignment: .trailing)
+
+                if job.canCancel {
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Cancel Transfer")
+                } else {
+                    Color.clear
+                        .frame(width: 24)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 6)
+
+            Divider()
+                .padding(.leading, 48)
+        }
+    }
+
+    private func rowFont(sizeOffset: Double = 0, weight: Font.Weight = .regular) -> Font {
+        InterfaceFontFamily.value(for: transferListFontFamily).font(size: transferListFontSize + sizeOffset, weight: weight)
+    }
+
+    private var showsProgressBar: Bool {
+        job.status == .running
+    }
+
+    private var sizeText: String {
+        Formatters.byteCount.string(fromByteCount: max(job.totalBytes, job.transferredBytes))
+    }
+
+    private var speedOrProgressText: String {
+        if job.status == .running {
+            return job.speedText
+        }
+
+        return percentText
+    }
+
+    private var statusText: String {
+        switch job.status {
+        case .running:
+            return job.direction == .download ? "Downloading" : "Uploading"
+        case .completed:
+            return "Done"
+        case .failed:
+            return "Failed"
+        case .queued:
+            return "Queued"
+        case .cancelled:
+            return "Cancelled"
+        }
+    }
+
+    private var percentText: String {
+        "\(Int((job.progress * 100).rounded()))%"
+    }
+
+    private var iconName: String {
+        switch job.status {
+        case .completed:
+            return "checkmark.circle.fill"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        case .cancelled:
+            return "xmark.circle"
         default:
+            return job.direction == .download ? "arrow.down.circle" : "arrow.up.circle"
+        }
+    }
+
+    private var statusColor: Color {
+        switch job.status {
+        case .completed:
+            return .green
+        case .failed:
+            return .red
+        case .queued, .cancelled:
+            return .secondary
+        case .running:
             return .accentColor
         }
     }

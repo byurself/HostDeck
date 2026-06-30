@@ -3,17 +3,22 @@ import WebKit
 
 struct TerminalView: View {
     @Bindable var appModel: AppModel
+    let serverID: ServerProfile.ID?
 
     var body: some View {
-        TerminalSurface(
-            events: appModel.terminalEvents,
-            onInput: { input in
-                Task { await appModel.sendTerminalInput(input) }
-            },
-            onResize: { columns, rows in
-                Task { await appModel.resizeTerminal(columns: columns, rows: rows) }
-            }
-        )
+        if let serverID {
+            TerminalSurface(
+                events: appModel.terminalEvents(for: serverID),
+                onInput: { input in
+                    Task { await appModel.sendTerminalInput(input, for: serverID) }
+                },
+                onResize: { columns, rows in
+                    Task { await appModel.resizeTerminal(columns: columns, rows: rows, for: serverID) }
+                }
+            )
+        } else {
+            ContentUnavailableView("No Server Selected", systemImage: "terminal")
+        }
     }
 }
 

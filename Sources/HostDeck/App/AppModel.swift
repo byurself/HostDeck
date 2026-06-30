@@ -150,7 +150,7 @@ final class AppModel {
     var selectedServer: ServerProfile? {
         get {
             guard let selectedServerID else { return nil }
-            return profileStore.profiles.first { $0.id == selectedServerID }
+            return profile(for: selectedServerID)
         }
         set {
             selectedServerID = newValue?.id
@@ -202,8 +202,28 @@ final class AppModel {
         transferStore.jobs
     }
 
+    func profile(for serverID: ServerProfile.ID) -> ServerProfile? {
+        profileStore.profiles.first { $0.id == serverID }
+    }
+
     func connectionState(for serverID: ServerProfile.ID) -> ConnectionState {
         sessionSnapshot(for: serverID).connectionState
+    }
+
+    func terminalEvents(for serverID: ServerProfile.ID) -> [TerminalEvent] {
+        sessionSnapshot(for: serverID).terminalEvents
+    }
+
+    func remotePath(for serverID: ServerProfile.ID) -> String {
+        sessionSnapshot(for: serverID).remotePath
+    }
+
+    func remoteFiles(for serverID: ServerProfile.ID) -> [RemoteFile] {
+        sessionSnapshot(for: serverID).remoteFiles
+    }
+
+    func statusMessage(for serverID: ServerProfile.ID) -> String {
+        sessionSnapshot(for: serverID).statusMessage
     }
 
     var selectedWorkspaceTab: WorkspaceTab? {
@@ -508,6 +528,10 @@ final class AppModel {
 
     func sendTerminalInput(_ text: String) async {
         guard let serverID = selectedServerID else { return }
+        await sendTerminalInput(text, for: serverID)
+    }
+
+    func sendTerminalInput(_ text: String, for serverID: ServerProfile.ID) async {
         guard connectionState(for: serverID).isConnected else {
             writeTerminal("Not connected. Double-click a server to connect.\r\n", for: serverID)
             return
@@ -522,6 +546,10 @@ final class AppModel {
 
     func resizeTerminal(columns: Int, rows: Int) async {
         guard let serverID = selectedServerID else { return }
+        await resizeTerminal(columns: columns, rows: rows, for: serverID)
+    }
+
+    func resizeTerminal(columns: Int, rows: Int, for serverID: ServerProfile.ID) async {
         await sshClient(for: serverID).resize(columns: columns, rows: rows)
     }
 
@@ -537,12 +565,17 @@ final class AppModel {
     }
 
     func prepareFileTransferWorkspace() async {
-        refreshLocalDirectory()
-
         guard let serverID = selectedServerID else {
+            refreshLocalDirectory()
             generalStatusMessage = "Select a server to browse remote files"
             return
         }
+
+        await prepareFileTransferWorkspace(for: serverID)
+    }
+
+    func prepareFileTransferWorkspace(for serverID: ServerProfile.ID) async {
+        refreshLocalDirectory()
 
         if !connectionState(for: serverID).isConnected {
             updateSession(for: serverID) { session in
@@ -602,10 +635,14 @@ final class AppModel {
 
     func openRemoteFile(_ file: RemoteFile) async {
         guard let serverID = selectedServerID else { return }
+        await openRemoteFile(file, for: serverID)
+    }
+
+    func openRemoteFile(_ file: RemoteFile, for serverID: ServerProfile.ID) async {
         guard file.kind == .directory else { return }
 
         if file.name == ".." {
-            await goUpRemoteDirectory()
+            await goUpRemoteDirectory(for: serverID)
             return
         }
 
@@ -616,6 +653,10 @@ final class AppModel {
 
     func openRemotePath(_ path: String) async {
         guard let serverID = selectedServerID else { return }
+        await openRemotePath(path, for: serverID)
+    }
+
+    func openRemotePath(_ path: String, for serverID: ServerProfile.ID) async {
         guard connectionState(for: serverID).isConnected else {
             setStatus("Connect to browse remote files", for: serverID)
             return
@@ -641,6 +682,10 @@ final class AppModel {
 
     func goUpRemoteDirectory() async {
         guard let serverID = selectedServerID else { return }
+        await goUpRemoteDirectory(for: serverID)
+    }
+
+    func goUpRemoteDirectory(for serverID: ServerProfile.ID) async {
         let currentPath = sessionSnapshot(for: serverID).remotePath
         guard currentPath != "/" else { return }
         updateSession(for: serverID) { $0.remotePath = currentPath.deletingLastPathComponent }
@@ -733,6 +778,10 @@ final class AppModel {
         setStatus("Skipped \(filename)")
     }
 
+    func noteTransferSkipped(_ filename: String, for serverID: ServerProfile.ID) {
+        setStatus("Skipped \(filename)", for: serverID)
+    }
+
     func cancelTransfer(_ jobID: TransferJob.ID) {
         if let task = runningTransferTasks[jobID] {
             transferStore.markCancelled(jobID)
@@ -748,7 +797,7 @@ final class AppModel {
         }
     }
 
-    private func refreshRemoteDirectory(for serverID: ServerProfile.ID) async {
+    func refreshRemoteDirectory(for serverID: ServerProfile.ID) async {
         let path = sessionSnapshot(for: serverID).remotePath
         do {
             let files = try await sftpClient(for: serverID).listDirectory(path: path)

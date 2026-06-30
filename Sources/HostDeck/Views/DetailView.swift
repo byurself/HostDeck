@@ -7,12 +7,6 @@ struct DetailView: View {
         let footerState = currentFooterState
 
         VStack(spacing: 0) {
-            DetailHeaderView(appModel: appModel)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
-
-            Divider()
-
             if !appModel.workspaceTabs.isEmpty {
                 WorkspaceTabBar(appModel: appModel)
                 Divider()
@@ -23,7 +17,11 @@ struct DetailView: View {
             } else if appModel.workspaceTabs.isEmpty {
                 WorkspaceEmptyStateView(appModel: appModel)
             } else {
-                PrimaryWorkspaceContent(appModel: appModel, workspace: appModel.selectedWorkspace)
+                PrimaryWorkspaceContent(
+                    appModel: appModel,
+                    workspace: appModel.selectedWorkspace,
+                    serverID: appModel.selectedServerID
+                )
             }
 
             Divider()
@@ -40,11 +38,6 @@ struct DetailView: View {
             .padding(.vertical, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .task(id: appModel.selectedWorkspace) {
-            if appModel.selectedWorkspace == .files {
-                await appModel.prepareFileTransferWorkspace()
-            }
-        }
     }
 
     @MainActor private var currentFooterState: DetailFooterState {
@@ -53,8 +46,14 @@ struct DetailView: View {
         }
 
         switch tab.kind {
-        case .primary:
-            return DetailFooterState(message: appModel.statusMessage, connectionState: appModel.connectionState)
+        case .primary(_, let serverID):
+            guard let serverID else {
+                return DetailFooterState(message: appModel.statusMessage, connectionState: appModel.connectionState)
+            }
+            return DetailFooterState(
+                message: appModel.statusMessage(for: serverID),
+                connectionState: appModel.connectionState(for: serverID)
+            )
         case .terminal(let sessionID):
             guard let session = appModel.terminalWindowSession(for: sessionID) else {
                 return DetailFooterState(message: "Terminal session not found", connectionState: .failed("Terminal session not found"))
@@ -184,15 +183,9 @@ private struct WorkspaceTabItem: View {
         HStack(spacing: 7) {
             Image(systemName: tab.systemImage)
                 .font(.caption)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(tab.title)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                Text(tab.subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text(tab.title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.caption2)
@@ -202,8 +195,8 @@ private struct WorkspaceTabItem: View {
             .help("Close Tab")
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(minWidth: 132, alignment: .leading)
+        .padding(.vertical, 7)
+        .frame(minWidth: 96, maxWidth: 150, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: 6)
                 .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08))
@@ -214,6 +207,7 @@ private struct WorkspaceTabItem: View {
         }
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
+        .help(tab.subtitle)
     }
 }
 
@@ -223,8 +217,8 @@ private struct WorkspaceTabContent: View {
 
     var body: some View {
         switch tab.kind {
-        case .primary(let workspace, _):
-            PrimaryWorkspaceContent(appModel: appModel, workspace: workspace)
+        case .primary(let workspace, let serverID):
+            PrimaryWorkspaceContent(appModel: appModel, workspace: workspace, serverID: serverID)
         case .terminal(let sessionID):
             if let session = appModel.terminalWindowSession(for: sessionID) {
                 TerminalSessionContentView(session: session)
@@ -246,52 +240,27 @@ private struct WorkspaceTabContent: View {
 private struct PrimaryWorkspaceContent: View {
     @Bindable var appModel: AppModel
     let workspace: WorkspaceKind
+    let serverID: ServerProfile.ID?
 
     var body: some View {
         Group {
             switch workspace {
             case .terminal:
-                TerminalView(appModel: appModel)
+                TerminalView(appModel: appModel, serverID: serverID)
             case .files:
-                SFTPBrowserView(appModel: appModel)
+                SFTPBrowserView(appModel: appModel, serverID: serverID)
             case .transfers:
                 TransferQueueView(appModel: appModel)
             }
         }
-        .task(id: workspace) {
-            if workspace == .files {
-                await appModel.prepareFileTransferWorkspace()
+        .task(id: taskID) {
+            if workspace == .files, let serverID {
+                await appModel.prepareFileTransferWorkspace(for: serverID)
             }
         }
     }
-}
 
-private struct DetailHeaderView: View {
-    @Bindable var appModel: AppModel
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "server.rack")
-                .font(.title2)
-                .foregroundStyle(.secondary)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(appModel.selectedServer?.displayName ?? "No Server Selected")
-                    .font(.headline)
-                Text(appModel.selectedServer.map { "\($0.username)@\($0.host):\($0.port)" } ?? "Create or select a server from the sidebar")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Button {
-                appModel.editingServer = appModel.selectedServer
-                appModel.isPresentingServerEditor = true
-            } label: {
-                Label("Edit", systemImage: "slider.horizontal.3")
-            }
-            .disabled(appModel.selectedServer == nil)
-        }
+    private var taskID: String {
+        "\(workspace.rawValue)-\(serverID?.uuidString ?? "none")"
     }
 }
